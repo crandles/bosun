@@ -242,6 +242,19 @@ func (s *Schedule) runHistory(r *RunHistory, ak models.AlertKey, event *models.E
 			}
 		}(ak)
 	}
+
+	// auto close if configured to auto-close.
+	if !newIncident && event.Status == models.StNormal && a.AutoClose {
+		// close incident
+		incident.Open = false
+
+		// render template so that it includes "normal" status
+		s.executeTemplates(incident, event, a, r)
+
+		// notify again
+		notify(a.CritNotification)
+		slog.Infof("auto close and notifying %s because returning to normal", ak)
+	}
 	s.Unlock()
 	return checkNotify, nil
 }

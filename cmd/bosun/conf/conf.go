@@ -348,6 +348,7 @@ type Alert struct {
 	UnknownsNormal   bool
 	UnjoinedOK       bool `json:",omitempty"`
 	Log              bool
+	AutoClose        bool
 	RunEvery         int
 	ReturnType       models.FuncType
 

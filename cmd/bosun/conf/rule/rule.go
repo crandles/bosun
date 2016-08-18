@@ -570,6 +570,8 @@ func (c *Conf) loadAlert(s *parse.SectionNode) {
 			a.UnknownsNormal = true
 		case "log":
 			a.Log = true
+		case "autoClose":
+			a.AutoClose = true
 		case "runEvery":
 			var err error
 			a.RunEvery, err = strconv.Atoi(v)
