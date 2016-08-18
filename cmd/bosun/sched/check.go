@@ -180,7 +180,14 @@ func (s *Schedule) runHistory(r *RunHistory, ak models.AlertKey, event *models.E
 		}
 	}
 
-	//render templates and open alert key if abnormal
+	// close the incident and render templates, if event is normal and configured to auto-close
+	if !newIncident && event.Status == models.StNormal && a.AutoClose {
+		incident.Open = false
+		shouldNotify = true
+		s.executeTemplates(incident, event, a, r)
+	}
+
+	// render templates and open alert key if abnormal
 	if event.Status > models.StNormal {
 		s.executeTemplates(incident, event, a, r)
 		incident.Open = true
@@ -215,7 +222,7 @@ func (s *Schedule) runHistory(r *RunHistory, ak models.AlertKey, event *models.E
 		}
 		incident.NeedAck = true
 		switch event.Status {
-		case models.StCritical, models.StUnknown:
+		case models.StCritical, models.StUnknown, models.StNormal:
 			notify(a.CritNotification)
 		case models.StWarning:
 			notify(a.WarnNotification)
@@ -243,18 +250,6 @@ func (s *Schedule) runHistory(r *RunHistory, ak models.AlertKey, event *models.E
 		}(ak)
 	}
 
-	// auto close if configured to auto-close.
-	if !newIncident && event.Status == models.StNormal && a.AutoClose {
-		// close incident
-		incident.Open = false
-
-		// render template so that it includes "normal" status
-		s.executeTemplates(incident, event, a, r)
-
-		// notify again
-		notify(a.CritNotification)
-		slog.Infof("auto close and notifying %s because returning to normal", ak)
-	}
 	s.Unlock()
 	return checkNotify, nil
 }
