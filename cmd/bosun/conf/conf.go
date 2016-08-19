@@ -342,6 +342,7 @@ type Alert struct {
 	Squelch          Squelches  `json:"-"`
 	CritNotification *Notifications
 	WarnNotification *Notifications
+	NormNotification *Notifications
 	Unknown          time.Duration
 	MaxLogFrequency  time.Duration
 	IgnoreUnknown    bool

@@ -7,10 +7,10 @@ order: 3
 <div class="row">
 <div class="col-sm-3" >
   <div class="sidebar" data-spy="affix" data-offset-top="0" data-offset-bottom="0" markdown="1">
- 
+
  * Some TOC
  {:toc}
- 
+
   </div>
 </div>
 
@@ -197,7 +197,7 @@ Global template functions:
 * replace: [strings.Replace](http://golang.org/pkg/strings/#Replace)
 * short: Trims the string to everything before the first period. Useful for turning a FQDN into a shortname. For example: `{{short "foo.baz.com"}}` -> `foo`.
 * parseDuration: [time.ParseDuration](http://golang.org/pkg/time/#ParseDuration). Useful when working with an alert's .Last.Time.Add method to generate urls to other systems.
-* html: takes a string and renders it as html. Useful for when you have alert variables that contain html. For example in the alert you may have `$notes = <a href="...">Foo</a>` and the in the template you can render it as html with `{{ html .Alert.Vars.notes }}` 
+* html: takes a string and renders it as html. Useful for when you have alert variables that contain html. For example in the alert you may have `$notes = <a href="...">Foo</a>` and the in the template you can render it as html with `{{ html .Alert.Vars.notes }}`
 
 All body templates are associated, and so may be executed from another. Use the name of the other template section for inclusion. Subject templates are similarly associated.
 
@@ -250,10 +250,12 @@ unknownTemplate = ut
 
 An alert is an evaluated expression which can trigger actions like emailing or logging. The expression must yield a scalar. The alert triggers if not equal to zero. Alerts act on each tag set returned by the query. It is an error for alerts to specify start or end times. Those will be determined by the various functions and the alerting system.
 
+* autoClose: if present, will close incident if alert status is evaluated to normal.
 * crit: expression of a critical alert (which will send an email)
 * critNotification: comma-separated list of notifications to trigger on critical. This line may appear multiple times and duplicate notifications, which will be merged so only one of each notification is triggered. Lookup tables may be used when `lookup("table", "key")` is an entire `critNotification` value. See example below.
 * depends: expression that this alert depends on. If the expression is non-zero, this alert is unevaluated. Unevaluated alerts do not change state or become unknown.
 * ignoreUnknown: if present, will prevent alert from becoming unknown
+* normNotification: identical to critNotification, but for normals. Only triggered if `autoClose` is enabled.
 * unknownIsNormal: will convert unkown events into normal events. For example, if you are alerting for the existence of error log messages, when there are none, that means things are normal. Using `ignoreUnknown` with this setting would be uneccesary.
 * runEvery: multiple of global `checkFrequency` at which to run this alert. If unspecified, the global `defaultRunEvery` will be used.
 * squelch: <a name="squelch"></a> comma-separated list of `tagk=tagv` pairs. `tagv` is a regex. If the current tag group matches all values, the alert is squelched, and will not trigger as crit or warn. For example, `squelch = host=ny-web.*,tier=prod` will match any group that has at least that host and tier. Note that the group may have other tags assigned to it, but since all elements of the squelch list were met, it is considered a match. Multiple squelch lines may appear; a tag group matches if any of the squelch lines match.
@@ -306,8 +308,8 @@ A notification is a chained action to perform. The chaining continues until the 
 * body: overrides the default POST body. The alert subject is passed as the templates `.` variable. The `V` function is available as in other templates. Additionally, a `json` function will output JSON-encoded data.
 * next: name of next notification to execute after timeout. Can be itself.
 * timeout: duration to wait until next is executed. If not specified, will happen immediately.
-* contentType: If your body for a POST notification requires a different Content-Type header than the default of `application/x-www-form-urlencoded`, you may set the contentType variable. 
-* runOnActions: Exclude this notification from action notifications. Notifications will be sent on ack/close/forget actions using a built-in template to all root level notifications for an alert, *unless* the notification specifies `runOnActions = false`. 
+* contentType: If your body for a POST notification requires a different Content-Type header than the default of `application/x-www-form-urlencoded`, you may set the contentType variable.
+* runOnActions: Exclude this notification from action notifications. Notifications will be sent on ack/close/forget actions using a built-in template to all root level notifications for an alert, *unless* the notification specifies `runOnActions = false`.
 
 #### actions
 
@@ -406,7 +408,7 @@ template cpu {
 	body = `Alert definition:
 	Name: {{.Alert.Name}}
 	Crit: {{.Alert.Crit}}
-	
+
 	Tags:{{range $k, $v := .Group}}
 	{{$k}}: {{$v}}{{end}}
 	`

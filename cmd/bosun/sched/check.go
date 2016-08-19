@@ -222,10 +222,12 @@ func (s *Schedule) runHistory(r *RunHistory, ak models.AlertKey, event *models.E
 		}
 		incident.NeedAck = true
 		switch event.Status {
-		case models.StCritical, models.StUnknown, models.StNormal:
+		case models.StCritical, models.StUnknown:
 			notify(a.CritNotification)
 		case models.StWarning:
 			notify(a.WarnNotification)
+		case models.StNormal:
+			notify(a.NormNotification)
 		}
 	}
 
