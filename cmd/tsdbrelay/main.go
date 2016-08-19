@@ -5,20 +5,22 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
 	"os"
-	"runtime"
 	"strings"
+
+	version "bosun.org/_version"
 
 	"bosun.org/cmd/tsdbrelay/denormalize"
 	"bosun.org/collect"
 	"bosun.org/metadata"
 	"bosun.org/opentsdb"
+	"bosun.org/slog"
 	"bosun.org/util"
 )
 
@@ -29,6 +31,7 @@ var (
 	tsdbServer      = flag.String("t", "", "Target OpenTSDB server. Can specify port with host:port.")
 	logVerbose      = flag.Bool("v", false, "enable verbose logging")
 	toDenormalize   = flag.String("denormalize", "", "List of metrics to denormalize. Comma seperated list of `metric__tagname__tagname` rules. Will be translated to `__tagvalue.tagvalue.metric`")
+	flagVersion     = flag.Bool("version", false, "Prints the version and exits.")
 
 	redisHost = flag.String("redis", "", "redis host for aggregating external counters")
 	redisDb   = flag.Int("db", 0, "redis db to use for counters")
@@ -41,10 +44,11 @@ var (
 	denormalizationRules map[string]*denormalize.DenormalizationRule
 
 	relayPutUrls []string
+
+	tags = opentsdb.TagSet{}
 )
 
 func main() {
-	runtime.GOMAXPROCS(runtime.NumCPU())
 	var err error
 	myHost, err = os.Hostname()
 	if err != nil || myHost == "" {
@@ -52,17 +56,22 @@ func main() {
 	}
 
 	flag.Parse()
-	if *bosunServer == "" || *tsdbServer == "" {
-		log.Fatal("must specify both bosun and tsdb server")
+	if *flagVersion {
+		fmt.Println(version.GetVersionInfo("tsdbrelay"))
+		os.Exit(0)
 	}
-	log.Println("listen on", *listenAddr)
-	log.Println("relay to bosun at", *bosunServer)
-	log.Println("relay to tsdb at", *tsdbServer)
+	if *bosunServer == "" || *tsdbServer == "" {
+		slog.Fatal("must specify both bosun and tsdb server")
+	}
+	slog.Infoln(version.GetVersionInfo("tsdbrelay"))
+	slog.Infoln("listen on", *listenAddr)
+	slog.Infoln("relay to bosun at", *bosunServer)
+	slog.Infoln("relay to tsdb at", *tsdbServer)
 	if *toDenormalize != "" {
 		var err error
 		denormalizationRules, err = denormalize.ParseDenormalizationRules(*toDenormalize)
 		if err != nil {
-			log.Fatal(err)
+			slog.Fatal(err)
 		}
 	}
 
@@ -121,19 +130,30 @@ func main() {
 		Path:   "/api/put",
 	}
 	if err = collect.Init(collectUrl, "tsdbrelay"); err != nil {
-		log.Fatal(err)
+		slog.Fatal(err)
 	}
-	log.Fatal(http.ListenAndServe(*listenAddr, nil))
-}
-
-func init() {
-	metadata.AddMetricMeta("tsdbrelay.puts.relayed", metadata.Counter, metadata.Count, "Number of successful puts relayed")
-	metadata.AddMetricMeta("tsdbrelay.metadata.relayed", metadata.Counter, metadata.Count, "Number of successful metadata puts relayed")
+	if err := metadata.Init(collectUrl, false); err != nil {
+		slog.Fatal(err)
+	}
+	// Make sure these get zeroed out instead of going unknown on restart
+	collect.Add("puts.relayed", tags, 0)
+	collect.Add("puts.error", tags, 0)
+	collect.Add("metadata.relayed", tags, 0)
+	collect.Add("metadata.error", tags, 0)
+	collect.Add("additional.puts.relayed", tags, 0)
+	collect.Add("additional.puts.error", tags, 0)
+	metadata.AddMetricMeta("tsdbrelay.puts.relayed", metadata.Counter, metadata.Count, "Number of successful puts relayed to opentsdb target")
+	metadata.AddMetricMeta("tsdbrelay.puts.error", metadata.Counter, metadata.Count, "Number of puts that could not be relayed to opentsdb target")
+	metadata.AddMetricMeta("tsdbrelay.metadata.relayed", metadata.Counter, metadata.Count, "Number of successful metadata puts relayed to bosun target")
+	metadata.AddMetricMeta("tsdbrelay.metadata.error", metadata.Counter, metadata.Count, "Number of metadata puts that could not be relayed to bosun target")
+	metadata.AddMetricMeta("tsdbrelay.additional.puts.relayed", metadata.Counter, metadata.Count, "Number of successful puts relayed to additional targets")
+	metadata.AddMetricMeta("tsdbrelay.additional.puts.error", metadata.Counter, metadata.Count, "Number of puts that could not be relayed to additional targets")
+	slog.Fatal(http.ListenAndServe(*listenAddr, nil))
 }
 
 func verbose(format string, a ...interface{}) {
 	if *logVerbose {
-		log.Printf(format, a...)
+		slog.Infof(format, a...)
 	}
 }
 
@@ -175,17 +195,18 @@ func (rp *relayProxy) relayPut(responseWriter http.ResponseWriter, r *http.Reque
 	w := &relayWriter{ResponseWriter: responseWriter}
 	rp.TSDBProxy.ServeHTTP(w, r)
 	if w.code/100 != 2 {
-		verbose("got status %d", w.code)
+		verbose("relayPut got status %d", w.code)
+		collect.Add("puts.error", tags, 1)
 		return
 	}
 	verbose("relayed to tsdb")
-	collect.Add("puts.relayed", opentsdb.TagSet{}, 1)
+	collect.Add("puts.relayed", tags, 1)
 	// Send to bosun in a separate go routine so we can end the source's request.
 	go func() {
 		body := bytes.NewBuffer(reader.buf.Bytes())
 		req, err := http.NewRequest(r.Method, bosunIndexURL, body)
 		if err != nil {
-			verbose("%v", err)
+			verbose("bosun connect error: %v", err)
 			return
 		}
 		resp, err := http.DefaultClient.Do(req)
@@ -207,8 +228,9 @@ func (rp *relayProxy) relayPut(responseWriter http.ResponseWriter, r *http.Reque
 				body := bytes.NewBuffer(reader.buf.Bytes())
 				req, err := http.NewRequest(r.Method, relayUrl, body)
 				if err != nil {
-					verbose("%v", err)
-					return
+					verbose("relayPutUrls connect error: %v", err)
+					collect.Add("additional.puts.error", tags, 1)
+					continue
 				}
 				req.Header.Set("Content-Type", "application/json")
 				req.Header.Set("Content-Encoding", "gzip")
@@ -216,10 +238,12 @@ func (rp *relayProxy) relayPut(responseWriter http.ResponseWriter, r *http.Reque
 				resp, err := http.DefaultClient.Do(req)
 				if err != nil {
 					verbose("secondary relay error: %v", err)
-					return
+					collect.Add("additional.puts.error", tags, 1)
+					continue
 				}
 				resp.Body.Close()
 				verbose("secondary relay success")
+				collect.Add("additional.puts.relayed", tags, 1)
 			}
 		}()
 	}
@@ -244,7 +268,7 @@ func (rp *relayProxy) denormalize(body io.Reader) {
 			if err = rule.Translate(dp); err == nil {
 				relayDps = append(relayDps, dp)
 			} else {
-				verbose(err.Error())
+				verbose("error translating points: %v", err.Error())
 			}
 		}
 	}
@@ -265,7 +289,7 @@ func (rp *relayProxy) denormalize(body io.Reader) {
 	}
 	req, err := http.NewRequest("POST", tsdbPutURL, buf)
 	if err != nil {
-		verbose("%v", err)
+		verbose("error posting denormalized data points: %v", err)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -283,11 +307,12 @@ func (rp *relayProxy) relayMetadata(responseWriter http.ResponseWriter, r *http.
 	w := &relayWriter{ResponseWriter: responseWriter}
 	rp.BosunProxy.ServeHTTP(w, r)
 	if w.code != 204 {
-		verbose("got status %d", w.code)
+		verbose("relayMetadata got status %d", w.code)
+		collect.Add("metadata.error", tags, 1)
 		return
 	}
 	verbose("relayed metadata to bosun")
-	collect.Add("metadata.relayed", opentsdb.TagSet{}, 1)
+	collect.Add("metadata.relayed", tags, 1)
 	if r.Header.Get(relayHeader) != "" {
 		return
 	}
@@ -298,18 +323,18 @@ func (rp *relayProxy) relayMetadata(responseWriter http.ResponseWriter, r *http.
 				body := bytes.NewBuffer(reader.buf.Bytes())
 				req, err := http.NewRequest(r.Method, relayUrl, body)
 				if err != nil {
-					verbose("%v", err)
-					return
+					verbose("metadata relayPutUrls error %v", err)
+					continue
 				}
 				req.Header.Set("Content-Type", "application/json")
 				req.Header.Add(relayHeader, myHost)
 				resp, err := http.DefaultClient.Do(req)
 				if err != nil {
-					verbose("secondary relay error: %v", err)
-					return
+					verbose("secondary relay metadata error: %v", err)
+					continue
 				}
 				resp.Body.Close()
-				verbose("secondary relay success")
+				verbose("secondary relay metadata success")
 			}
 		}()
 	}
